@@ -75,6 +75,33 @@ choc stems note the posts stay in standard orientation. Two upstream source
 files (`Saddle_Tilted` in both Choc Size combos) ship with a small crack along
 the front wall and are repaired automatically during generation.
 
+## Materials (community-tested, from upstream issues)
+
+Best documented results, in order:
+
+| Material / process               | Verdict                                                                       |
+| :------------------------------- | :----------------------------------------------------------------------------- |
+| **MJF PA12-HP Nylon, black**     | Best feel per long-term users (issue #24): PBT-like texture, easy to clean. Black hides grime; natural gray looks dirty out of the box. |
+| **MJF PA12S-HP Nylon**           | **Avoid** (issue #35): stems print too thick, MX switches don't fit. The models expect PA12-HP's shrinkage. |
+| **SLA resin (LC Black, JLC)**    | "Turned out nicely" (issue #24). Smooth glassy feel — some love it, one user compared it to "fingers on a blackboard". |
+| **SLA resin (translucent 8001)** | Confirmed working (issue #24). For full transparency PCBWay clear resin works; don't expect 100% clarity (issue #7). |
+| **SLA white**                    | Avoid: author warns it yellows in sunlight; white SLS also gets dirty fast.    |
+| **FDM (home printer)**           | Works since v1.1; author recommends SLA for quality. 75° along X for Tilted, 60° for the rest, keep supports out of the stem socket (issue #17). Print individual caps, not the fused plates. |
+
+Ordering caveats for the fused Sofle plates:
+
+- **SLA is the safer process for connected plates.** An SLS order of upstream's
+  combined files arrived with caps snapped off their connectors (issue #22 —
+  powder tumbling/blasting is rough on sprues). Upstream thickened connectors
+  in v1.4 and these plates use the same bar size, but with MJF/SLS expect some
+  caps to arrive loose; the caps themselves survive fine.
+- Skip the "sanding" surface finish: it can eat the choc stem and loosen fit
+  (issue #24; Kapton tape on the stem is the rescue if it happens).
+- JLC flags `<0.8mm wall thickness` on these caps — accept it; prints have
+  been fine. Connected parts add $0.1/pc and 1-2 business days.
+- Choc switch-top collision was fixed upstream in v1.4 (0.6mm bump, issue #21,
+  confirmed with Ambient silents); these plates are built from current models.
+
 ## Notes
 
 - Rotary encoders: each EC11 encoder replaces one thumb key. Subtract one

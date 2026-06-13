@@ -2,6 +2,9 @@
 # ABOUTME: stem/size combo, caps fused by connector bars like the upstream Production plates.
 
 import os
+import shutil
+import subprocess
+import tempfile
 
 import numpy as np
 import trimesh
@@ -20,13 +23,16 @@ COMBOS = {
     "Choc Stem + Choc Size": {"prefix": "Choc_Stem_Choc_Size", "key_pitch": 18.0},
 }
 
-# Caps sit 1mm apart, bridged by 3x4mm bars like upstream production plates.
+# Caps sit 1mm apart, bridged by connector bars that weld into the cap skirts.
+# JLC3DP's connected-parts rule requires every connection cross-section to be
+# at least 1.5mm (3.0mm to guarantee the parts stay unified and aren't flagged
+# as loose small parts), so the bars are a 3.0mm-wide x 3.0mm-tall solid that
+# bridges the gap and overlaps each cap wall.
+# https://jlc3dp.com/help/article/213-Connected-Parts-Printing-Guide
 CAP_GAP = 1.0
 BAR_WIDTH = 3.0
 BAR_LENGTH = 4.0
-# Bars must weld into the cap skirt walls; these caps are low profile and the
-# stem hangs below the skirt, so the bar z-range is measured per combo.
-BAR_WELD_HEIGHT = 1.0
+BAR_HEIGHT = 3.0
 
 # Sofle v2 mix per SOFLE_PRINT_MIX.md: tilted rows outermost, saddle home row,
 # normal upper row, thumbs + two 1.25u (Space/Enter) for the wide inner thumb keys.
@@ -52,9 +58,11 @@ PLATE_ROWS = [
 ]
 VARIANTS = ["Saddle_Tilted", "Normal", "Saddle", "Saddle_Homing", "Normal_Tilted", "Thumb"]
 
-# The 1.25u stretch cuts sit outside the stem (MX cross and choc posts both stay
-# within |y| < 3mm) but inside the cap walls of even the smaller choc caps.
-CUT_Y = 5.0
+# The 1.25u stretch ramp is zero over the stem (MX cross and choc posts both
+# stay within |y| < 3mm) and reaches the full shift before the cap walls of
+# even the smaller choc caps.
+STRETCH_INNER = 3.5
+STRETCH_OUTER = 7.0
 
 DECIMATE_TARGET = 12000
 DECIMATE_TARGET_125U = 16000
@@ -122,11 +130,17 @@ def to_manifold(mesh):
 
 def to_trimesh(manifold):
     out = manifold.to_mesh()
-    raw = trimesh.Trimesh(out.vert_properties[:, :3].astype(np.float64), out.tri_verts)
-    # manifold3d emits float32 vertices, leaving near-duplicate points that break
-    # trimesh's adjacency checks. Weld on a 0.0001mm grid, escalating to 0.001mm
-    # (still far below any cap feature) when boolean seams need the coarser snap,
-    # and drop the degenerate faces the welding collapses.
+    # manifold3d's output is topologically closed by vertex index — keep it
+    # unprocessed if trimesh agrees (position-welding can fuse distinct vertices
+    # that merely touch, breaking topology that was fine).
+    raw = trimesh.Trimesh(
+        out.vert_properties[:, :3].astype(np.float64), out.tri_verts, process=False
+    )
+    if raw.is_watertight:
+        return raw
+    # Otherwise weld float32 near-duplicates on a 0.0001mm grid, escalating to
+    # 0.001mm (still far below any cap feature) when boolean seams need the
+    # coarser snap, and drop the degenerate faces the welding collapses.
     for digits in (4, 3):
         mesh = raw.copy()
         mesh.merge_vertices(digits_vertex=digits)
@@ -151,39 +165,100 @@ def slab(y_min, y_max):
 def build_stretched_thumb(combo):
     """Build the combo's 1.25u thumb from its pristine 1u Thumb cap.
 
-    Mirrors the community stretch from upstream issue #28: the cap is cut at
-    y=+-5mm, the outer pieces are shifted apart, and the gaps are filled with
-    prisms made by stretching a thin slice taken at each cut. The stem sits
-    between the cuts and is therefore geometrically untouched.
+    Vertices are displaced along y with a smoothstep ramp: zero over the stem
+    (|y| < STRETCH_INNER), the full quarter-pitch shift past STRETCH_OUTER, and
+    a C1-smooth blend between — like the CAD stretch of the community cap from
+    upstream issue #28, with no seams. Topology is untouched, so the result is
+    watertight by construction and the stem stays geometrically exact.
     """
     stretch_half = 0.25 * COMBOS[combo]["key_pitch"] / 2
-    cap = to_manifold(repair_if_needed(load_cap(combo, "Thumb")))
+    cap = repair_if_needed(load_cap(combo, "Thumb"))
 
-    left = (cap ^ slab(-100, -CUT_Y)).translate([0, -stretch_half, 0])
-    mid = cap ^ slab(-CUT_Y, CUT_Y)
-    right = (cap ^ slab(CUT_Y, 100)).translate([0, stretch_half, 0])
+    y = cap.vertices[:, 1]
+    t = np.clip((np.abs(y) - STRETCH_INNER) / (STRETCH_OUTER - STRETCH_INNER), 0.0, 1.0)
+    ramp = t * t * (3.0 - 2.0 * t)
+    verts = cap.vertices.copy()
+    verts[:, 1] = y + np.sign(y) * stretch_half * ramp
 
-    bands = []
-    for sign in (-1, 1):
-        cut = sign * CUT_Y
-        # 0.02mm slice at the cut plane, stretched into a prism that overlaps
-        # 0.01mm into the neighboring pieces so the union has no coplanar seams.
-        thin = cap ^ slab(cut - 0.01, cut + 0.01)
-        prism_len = stretch_half + 0.02
-        prism = thin.scale([1, prism_len / 0.02, 1])
-        # After scaling about the origin the slice center lands at cut * scale;
-        # move the prism so it spans from just inside the mid piece outward.
-        prism_center_target = cut + sign * (stretch_half / 2)
-        prism = prism.translate([0, prism_center_target - cut * (prism_len / 0.02), 0])
-        bands.append(prism)
-
-    stretched = left + bands[0] + mid + bands[1] + right
-    result = to_trimesh(stretched)
+    result = trimesh.Trimesh(verts, cap.faces.copy(), process=False)
     if not result.is_watertight:
-        # Deliberately no MeshFix fallback here: it rebuilds geometry and has
-        # been seen gouging stem posts, which must stay exact.
         raise ValueError("stretched 1.25u thumb is not watertight")
     return result
+
+
+def separate_touching_sheets(mesh):
+    """Nudge apart surface points that touch at identical positions.
+
+    The mesh must be watertight by vertex index. Distinct vertices sharing one
+    position are self-touch pinches: exact, so any STL round trip welds them
+    into non-manifold junctions. Each one is moved half a micron along its own
+    vertex normal, which keeps the sheets apart through export and re-import.
+    """
+    from scipy.spatial import cKDTree
+
+    pairs = cKDTree(mesh.vertices).query_pairs(r=1e-7)
+    if not pairs:
+        return mesh
+    verts = mesh.vertices.copy()
+    normals = mesh.vertex_normals
+    for pair in pairs:
+        for v in pair:
+            verts[v] = verts[v] + normals[v] * 0.0005
+    return trimesh.Trimesh(verts, mesh.faces.copy(), process=False)
+
+
+def community_thumb_125(combo):
+    """Load the community-stretched 1.25u (upstream issue #28) when the combo
+    ships one. The file is not watertight as-shipped and resists ordinary
+    decimation, so it is healed via a manifold3d merge and decimated with
+    Blender's collapse modifier, then verified against the original surface.
+    Returns None when the combo has no community file or Blender is missing.
+    """
+    path = os.path.join(
+        REPO_ROOT, "STL", combo, f"{COMBOS[combo]['prefix']}_Thumb_1.25u.stl"
+    )
+    if not os.path.exists(path) or shutil.which("blender") is None:
+        return None
+    orig = trimesh.load(path, process=True)
+    m = m3d.Mesh(orig.vertices.astype(np.float32), orig.faces.astype(np.uint32))
+    m.merge()
+    out = m3d.Manifold(m).to_mesh()
+    healed = trimesh.Trimesh(
+        out.vert_properties[:, :3].astype(np.float64), out.tri_verts, process=False
+    )
+    healed = separate_touching_sheets(healed)
+    with tempfile.TemporaryDirectory() as tmp:
+        src, dst = os.path.join(tmp, "in.stl"), os.path.join(tmp, "out.stl")
+        healed.export(src)
+        script = os.path.join(tmp, "decimate.py")
+        with open(script, "w") as f:
+            f.write(
+                "import bpy, sys\n"
+                "argv = sys.argv[sys.argv.index('--')+1:]\n"
+                "bpy.ops.wm.read_factory_settings(use_empty=True)\n"
+                "bpy.ops.wm.stl_import(filepath=argv[0])\n"
+                "obj = bpy.context.selected_objects[0]\n"
+                "mod = obj.modifiers.new('dec', 'DECIMATE')\n"
+                "mod.ratio = float(argv[2])\n"
+                "bpy.context.view_layer.objects.active = obj\n"
+                "bpy.ops.object.modifier_apply(modifier='dec')\n"
+                "bpy.ops.wm.stl_export(filepath=argv[1], export_selected_objects=True)\n"
+            )
+        ratio = DECIMATE_TARGET_125U / len(healed.faces)
+        subprocess.run(
+            ["blender", "-b", "-P", script, "--", src, dst, str(ratio)],
+            check=True, capture_output=True,
+        )
+        slim = trimesh.load(dst, process=True)
+    if not slim.is_watertight:
+        raise ValueError("community 1.25u lost watertightness through decimation")
+    samples, _ = trimesh.sample.sample_surface(orig, 10000, seed=42)
+    _, dist, _ = trimesh.proximity.closest_point(slim, samples)
+    if dist.max() > DECIMATE_MAX_ERROR:
+        raise ValueError(f"community 1.25u decimation error {dist.max():.4f}mm")
+    center = (slim.bounds[0] + slim.bounds[1]) / 2
+    slim.vertices -= [center[0], center[1], slim.bounds[0][2]]
+    return slim
 
 
 def decimate(mesh, target):
@@ -217,30 +292,50 @@ def bar(x, y, z_range, along_x):
     return to_manifold(box)
 
 
-def build_plate(combo):
-    print(f"[{combo}] preparing cap meshes...")
+def build_plate(combo, wide_thumb="Thumb_1.25u"):
+    """wide_thumb: "Thumb_1.25u" (stretched, community shape from issue #28)
+    or "1.5U_Thumb_V" / "1.5U_Thumb_H" (upstream sculpted 1.5U caps).
+    Pass a tuple of names to put several wide caps on the plate."""
+    wide_thumbs = (wide_thumb,) * 2 if isinstance(wide_thumb, str) else tuple(wide_thumb)
+    print(f"[{combo}] preparing cap meshes (wide thumbs: {', '.join(wide_thumbs)})...")
     caps = {}
     skirts = {}
     for name in VARIANTS:
         raw = repair_if_needed(load_cap(combo, name))
         skirts[name] = skirt_bottom_z(raw)
         caps[name] = decimate(raw, DECIMATE_TARGET)
-    stretched = build_stretched_thumb(combo)
-    skirts["Thumb_1.25u"] = skirt_bottom_z(stretched)
-    caps["Thumb_1.25u"] = decimate(stretched, DECIMATE_TARGET_125U)
+    for name in set(wide_thumbs):
+        if name == "Thumb_1.25u":
+            # Prefer the community cap (smooth CAD stretch); fall back to our
+            # cut-and-fill stretch for combos that have no community file.
+            wide_cap = community_thumb_125(combo)
+            if wide_cap is None:
+                wide_cap = decimate(build_stretched_thumb(combo), DECIMATE_TARGET_125U)
+        else:
+            wide_cap = decimate(repair_if_needed(load_cap(combo, name)), DECIMATE_TARGET_125U)
+        skirts[name] = skirt_bottom_z(wide_cap)
+        caps[name] = wide_cap
 
-    # Bars start at the lowest skirt and reach BAR_WELD_HEIGHT past the highest
-    # one, so every adjacent pair of variants gets welded.
-    bar_z = (min(skirts.values()), max(skirts.values()) + BAR_WELD_HEIGHT)
+    # Bars span BAR_HEIGHT upward from the lowest skirt, so every cap's wall is
+    # overlapped and the connection cross-section is a solid BAR_WIDTH x
+    # BAR_HEIGHT. Verify the bar welds into the highest-skirt caps and stays
+    # below the shortest cap top (so it never breaks through a dished surface).
+    min_skirt, max_skirt = min(skirts.values()), max(skirts.values())
+    shortest_top = min(c.bounds[1][2] for c in caps.values())
+    bar_z = (min_skirt, min_skirt + BAR_HEIGHT)
+    assert bar_z[1] > max_skirt + 1.0, "bar too short to weld into the tallest skirt"
+    assert bar_z[1] < shortest_top - 0.3, "bar would break through the shortest cap top"
 
     size = caps["Normal"].bounds[1] - caps["Normal"].bounds[0]
     cap_w, cap_d = size[0], size[1]
     pitch_x, pitch_y = cap_w + CAP_GAP, cap_d + CAP_GAP
-    stretch_total = 0.25 * COMBOS[combo]["key_pitch"]
 
     print(f"[{combo}] placing caps and connector bars...")
     parts = []
     used = {name: 0 for name, _ in MIX}
+    used.pop("Thumb_1.25u")
+    for name in wide_thumbs:
+        used.setdefault(name, 0)
     for r, row in enumerate(PLATE_ROWS):
         y = -r * pitch_y
         for c, name in enumerate(row):
@@ -251,18 +346,31 @@ def build_plate(combo):
             if r > 0:
                 parts.append(bar(c * pitch_x, y + pitch_y / 2, bar_z, along_x=False))
 
-    # 1.25u row: deeper caps, so the row drops by half the standard cap depth
-    # plus half the stretched depth plus the standard gap.
-    depth_125u = cap_d + stretch_total
-    last_row_y = -(len(PLATE_ROWS) - 1) * pitch_y - (cap_d + depth_125u) / 2 - CAP_GAP
-    gap_y = -(len(PLATE_ROWS) - 1) * pitch_y - cap_d / 2 - CAP_GAP / 2
-    for c in range(2):
-        parts.append(to_manifold(caps["Thumb_1.25u"]).translate([c * pitch_x, last_row_y, 0]))
-        used["Thumb_1.25u"] += 1
-        parts.append(bar(c * pitch_x, gap_y, bar_z, along_x=False))
-    parts.append(bar(pitch_x / 2, last_row_y, bar_z, along_x=True))
+    # Wide-thumb row: caps may differ in footprint, so align their top edges
+    # one gap below the thumb row and advance the x cursor per cap width.
+    top_edge_y = -(len(PLATE_ROWS) - 1) * pitch_y - cap_d / 2 - CAP_GAP
+    gap_y = top_edge_y + CAP_GAP / 2
+    cursor = 0.0
+    prev_edge = None
+    for name in wide_thumbs:
+        w, d = (caps[name].bounds[1] - caps[name].bounds[0])[:2]
+        cx = cursor + w / 2
+        parts.append(to_manifold(caps[name]).translate([cx, top_edge_y - d / 2, 0]))
+        used[name] += 1
+        # weld upward into whichever thumb-row column sits above this cap
+        col_x = min(7, max(0, round(cx / pitch_x))) * pitch_x
+        col_x = min(max(col_x, cx - w / 2 + BAR_WIDTH), cx + w / 2 - BAR_WIDTH)
+        parts.append(bar(col_x, gap_y, bar_z, along_x=False))
+        if prev_edge is not None:
+            # weld sideways to the previous wide cap, near their aligned tops
+            parts.append(bar(prev_edge + CAP_GAP / 2, top_edge_y - 8.0, bar_z, along_x=True))
+        prev_edge = cursor + w
+        cursor += w + CAP_GAP
 
     expected = dict(MIX)
+    expected.pop("Thumb_1.25u")
+    for name in wide_thumbs:
+        expected[name] = expected.get(name, 0) + 1
     if used != expected:
         raise ValueError(f"layout does not match mix: {used} != {expected}")
 
@@ -278,16 +386,36 @@ def build_plate(combo):
         raise ValueError("plate is not watertight")
 
     path = plate_path(combo)
+    kinds = set(wide_thumbs)
+    if len(kinds) > 1:
+        pass  # both wide-thumb options is the standard plate
+    elif kinds == {"Thumb_1.25u"}:
+        path = path.replace("_Sofle_Mix.stl", "_Sofle_Mix_125U.stl")
+    else:
+        path = path.replace("_Sofle_Mix.stl", "_Sofle_Mix_15U.stl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     result.export(path)
     size = result.bounds[1] - result.bounds[0]
+    n_caps = 56 + len(wide_thumbs)
     print(f"[{combo}] wrote {os.path.basename(path)}: {os.path.getsize(path) / 1e6:.1f} MB, "
-          f"{size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} mm, 58 caps")
+          f"{size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} mm, {n_caps} caps")
 
 
 def main():
-    for combo in COMBOS:
-        build_plate(combo)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--combo", choices=list(COMBOS), help="build a single combo")
+    parser.add_argument("--thumb", default="both", choices=["1.25u", "1.5uV", "1.5uH", "both"],
+                        help="wide thumb caps: both (default), 1.25u only, or upstream 1.5U only")
+    args = parser.parse_args()
+    wide = {
+        "1.25u": ("Thumb_1.25u",) * 2,
+        "1.5uV": ("1.5U_Thumb_V",) * 2,
+        "1.5uH": ("1.5U_Thumb_H",) * 2,
+        "both": ("Thumb_1.25u", "Thumb_1.25u", "1.5U_Thumb_V", "1.5U_Thumb_V"),
+    }[args.thumb]
+    for combo in ([args.combo] if args.combo else COMBOS):
+        build_plate(combo, wide_thumb=wide)
 
 
 if __name__ == "__main__":

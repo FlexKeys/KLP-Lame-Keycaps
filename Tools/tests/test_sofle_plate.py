@@ -10,6 +10,8 @@ import trimesh
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from make_sofle_plate import (  # noqa: E402
+    BAR_HEIGHT,
+    BAR_WIDTH,
     COMBOS,
     MIX,
     REPO_ROOT,
@@ -20,6 +22,11 @@ from make_sofle_plate import (  # noqa: E402
 )
 
 COMBO_IDS = list(COMBOS)
+
+# JLC3DP connected-parts rule: connection cross-sections must be >= 1.5mm, and
+# 3.0mm keeps them unified rather than flagged as loose small parts.
+JLC_MIN_CONNECTION = 1.5
+JLC_UNIFIED_CONNECTION = 3.0
 
 
 @pytest.fixture(scope="module", params=COMBO_IDS)
@@ -47,19 +54,50 @@ def test_plate_is_single_watertight_body(plate):
     assert len(components) == 1, f"expected one fused body, got {len(components)}"
 
 
-def test_plate_has_58_cap_walls(combo, plate):
-    # Slice above the connector bars but below the lowest cap top: every cap
-    # shows its outer wall ring there. Stems also appear in the slice but are
-    # far smaller, so count only wall-sized polygons.
-    thumb = load_cap(combo, "Thumb")
-    slice_z = (skirt_bottom_z(thumb) + thumb.bounds[1][2]) / 2
+def test_plate_has_60_cap_walls(combo, plate):
+    # Slice low, where every cap (whatever its height) still shows a hollow
+    # wall. Connector bars fuse the outer boundaries together, so cap count is
+    # read from the interior holes: one cap-sized hole per cap. The standard
+    # plate holds the 58-key mix plus both wide-thumb options (2x 1.25u, 2x
+    # 1.5U). Slicing high would miss the short caps closed into their dish.
+    from shapely.geometry import Polygon
+
+    cap = load_cap(combo, "Normal")
+    cap_area = np.prod((cap.bounds[1] - cap.bounds[0])[:2])
+    slice_z = skirt_bottom_z(cap) + 0.6
     section = plate.section(plane_origin=[0, 0, slice_z], plane_normal=[0, 0, 1])
     assert section is not None
     planar, _ = section.to_2D()
+    holes = sum(
+        1
+        for poly in planar.polygons_full
+        for ring in poly.interiors
+        if Polygon(ring).area > cap_area / 3
+    )
+    assert holes == 60, f"expected 60 cap walls in cross-section, found {holes}"
+
+
+def test_connection_bars_meet_jlc_minimum():
+    # Both bar cross-section dimensions must clear JLC's unified-connection size
+    # so the plate is accepted as one shell, not 60 loose small parts.
+    assert min(BAR_WIDTH, BAR_HEIGHT) >= JLC_UNIFIED_CONNECTION
+
+
+def test_horizontal_bridge_is_solid(combo, plate):
+    # The bar between the first two top-row caps must be a solid block at least
+    # JLC's minimum across its cross-section. Probe a grid of points filling a
+    # JLC_MIN_CONNECTION square at the bar centre and require all inside.
     cap = load_cap(combo, "Normal")
-    cap_area = np.prod((cap.bounds[1] - cap.bounds[0])[:2])
-    walls = [p for p in planar.polygons_full if p.area > cap_area / 10]
-    assert len(walls) == 58, f"expected 58 cap walls in cross-section, found {len(walls)}"
+    pitch_x = (cap.bounds[1] - cap.bounds[0])[0] + 1.0
+    bar_center_z = skirt_bottom_z(cap) + BAR_HEIGHT / 2
+    half = JLC_MIN_CONNECTION / 2
+    offs = np.linspace(-half, half, 5)
+    pts = np.array([[pitch_x / 2, y, bar_center_z + z] for y in offs for z in offs])
+    inside = plate.contains(pts)
+    assert inside.all(), (
+        f"{(~inside).sum()}/{len(pts)} probe points in the bridge are outside the "
+        "mesh — connection thinner than JLC minimum"
+    )
 
 
 def test_plate_dimensions_fit_layout(plate):

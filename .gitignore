@@ -4,3 +4,7 @@
 Lychee
 .venv
 __pycache__
+# Full 60-cap plates are JLC-rejected intermediates (>10 parts) and regenerable
+# from the generator; only the orderable <=9-cap split files are committed.
+Production/**/*_Sofle_Mix.stl
+Production/**/*_Sofle_Mix_Nylon.stl

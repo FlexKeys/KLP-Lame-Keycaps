@@ -1,13 +1,16 @@
-SOFLE KEYCAP PLATES (KLP Lamé) — READY TO UPLOAD TO JLC3DP
-==========================================================
+SOFLE KEYCAP ORDER FILES (KLP Lamé) — JLC3DP
+=============================================
 
-Each set is the full 58-key Sofle mix + both wide-thumb options (60 caps).
-Files live in Production/<combo>/. Two file types per set:
+JLC3DP rejects any file with more than 10 small parts — for BOTH resin and
+nylon. So each Sofle set is split into SEVEN files of <=9 caps each, held
+together by light connector bars (this is exactly what upstream's Production
+files do, and it passes). Upload all seven for your combo.
 
-  ..._Sofle_Mix.stl        SLA RESIN. 60 caps fused into one plate.
-                           Snip the bars off with flush cutters after printing.
-  ..._Sofle_Mix_Nylon.stl  MJF / SLS NYLON. 60 loose caps in one file, printed
-                           individually (no bars to snip).
+  Production/<combo>/<combo>_Sofle_Mix_9pc_1of7.stl ... _7of7.stl
+
+The SAME seven files work for resin AND nylon — the process is just a setting
+in JLC's order form, not a different file. Snip the small bars off after
+printing either way.
 
 PICK YOUR COMBO (stem = your switch, size = your board spacing)
   MX Stem + MX Size       -> MX switches, MX-spaced board (standard Sofle v2)
@@ -15,19 +18,16 @@ PICK YOUR COMBO (stem = your switch, size = your board spacing)
   MX Stem + Choc Size     -> MX switches on a choc-spaced board
   Choc Stem + MX Size     -> Choc switches on an MX-spaced board
 
-ORDER SETTINGS (JLC3DP)
-  SLA (the plain .stl):
-    3D Technology = SLA(Resin)
-    Material      = JLC Black Resin   (or 8001 Resin -> Translucent for RGB)
-    Surface Finish= No                (sanding loosens the stems!)
-    Product Desc  = Office Appliance and Accessories
-    Accept the "<0.8mm wall" warning. Connected-parts adds ~$0.10/pc + 1-2 days.
+Each combo's 7 files together = the full 58-key mix + both wide-thumb options
+(2x 1.25u + 2x 1.5U); the unused thumb pair is spares.
 
-  NYLON (the _Nylon.stl):
-    3D Technology = MJF(Nylon)
-    Material      = PA12-HP Nylon   -- NOT PA12S-HP (stems print too thick)
-    Color         = Black           (natural grey looks dirty)
-    No surface finish. Best feel of all the options.
+ORDER SETTINGS (JLC3DP)
+  RESIN:  3D Technology = SLA(Resin); Material = JLC Black Resin
+          (or 8001 Resin -> Translucent for RGB); Surface Finish = No.
+  NYLON:  3D Technology = MJF(Nylon); Material = PA12-HP  (NOT PA12S-HP).
+          Color Black. No surface finish. Best feel.
+  Both:   Product Desc = Office Appliance and Accessories. Accept the
+          "<0.8mm wall" warning. Order qty 1 of each of the 7 files.
 
 AVOID: white SLA (yellows in sun), sanding finish (loosens stems),
        PA12S-HP nylon (won't fit switches).

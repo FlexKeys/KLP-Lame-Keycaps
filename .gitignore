@@ -4,5 +4,3 @@
 Lychee
 .venv
 __pycache__
-# raw plate STLs in Production stay local; only the zips are committed
-Production/**/*.stl

@@ -54,16 +54,30 @@ plates instead.)
 The 3.0mm bar cross-section meets JLC3DP's connected-parts rule: connections
 must be ≥1.5mm, and ≥3.0mm to be accepted as one unified shell instead of being
 flagged as loose small parts (their checker rejects more than 10 separate small
-parts). Earlier 1.0mm bars were rejected for this reason. Use **SLA or SLS** —
-the connected-parts method does not support MJF/FDM/WJP/BJ/SLM.
+parts). Earlier 1.0mm bars were rejected for this reason. The fused plate is
+for **SLA resin or SLS** — the connected-parts method does not support
+MJF/FDM/WJP/BJ/SLM.
 https://jlc3dp.com/help/article/213-Connected-Parts-Printing-Guide
 
-| Combo                 | File (under `Production/<combo>/`)     | Plate size          |
+| Combo                 | Fused plate (`Production/<combo>/`)    | Plate size          |
 | :-------------------- | :-------------------------------------- | :------------------ |
 | MX Stem + MX Size     | `MX_Stem_MX_Size_Sofle_Mix.stl`         | 151 × 156 × 9.3 mm  |
 | MX Stem + Choc Size   | `MX_Stem_Choc_Size_Sofle_Mix.stl`       | 147 × 143 × 9.1 mm  |
 | Choc Stem + MX Size   | `Choc_Stem_MX_Size_Sofle_Mix.stl`       | 151 × 156 × 9.8 mm  |
 | Choc Stem + Choc Size | `Choc_Stem_Choc_Size_Sofle_Mix.stl`     | 147 × 143 × 9.6 mm  |
+
+### Nylon (MJF / SLS): the `_Nylon` files
+
+MJF can't print the fused plate (powder-bed processes don't support connected
+parts), but it doesn't need to — it prints loose parts nested in powder with no
+supports. Each combo therefore has a companion `*_Sofle_Mix_Nylon.stl`: the
+same 60 caps as **separate, non-touching bodies** in one multi-body file. Upload
+it, pick MJF (PA12-HP, not PA12S-HP) or SLS, and the caps print individually —
+no bars to snip. This is the better-feeling option (see Materials) and avoids
+the connected-parts surcharge.
+
+Choose by process: **SLA → the fused plate; MJF/SLS → the `_Nylon` file.**
+(SLS works either way; the loose file is simpler and avoids the snip step.)
 
 Pick by switch type (stem) and board spacing (size): the MX Sofle v2 is
 MX Stem + MX Size; the Sofle Choc (choc spacing, also 58 keys with two wider
@@ -89,9 +103,10 @@ repaired automatically during generation.
 
 ## Materials (community-tested, from upstream issues)
 
-> Note: the fused plates can only be ordered in **SLA or SLS** — JLC's
-> connected-parts method excludes MJF/FDM/WJP/BJ/SLM. The MJF option below
-> applies only if you split the plate and order caps individually.
+> Note: the **fused plate** can only be ordered in **SLA or SLS** — JLC's
+> connected-parts method excludes MJF. For MJF nylon, use the **`_Nylon`
+> loose-bodies file** (above) instead, which the powder-bed printer nests
+> without connectors.
 
 Best documented results, in order:
 

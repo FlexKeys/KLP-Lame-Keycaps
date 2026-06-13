@@ -292,10 +292,13 @@ def bar(x, y, z_range, along_x):
     return to_manifold(box)
 
 
-def build_plate(combo, wide_thumb="Thumb_1.25u"):
+def build_plate(combo, wide_thumb="Thumb_1.25u", connected=True):
     """wide_thumb: "Thumb_1.25u" (stretched, community shape from issue #28)
     or "1.5U_Thumb_V" / "1.5U_Thumb_H" (upstream sculpted 1.5U caps).
-    Pass a tuple of names to put several wide caps on the plate."""
+    Pass a tuple of names to put several wide caps on the plate.
+
+    connected=True fuses the caps with bars into one SLA-ready shell;
+    connected=False emits the caps as separate bodies for MJF/SLS nylon."""
     wide_thumbs = (wide_thumb,) * 2 if isinstance(wide_thumb, str) else tuple(wide_thumb)
     print(f"[{combo}] preparing cap meshes (wide thumbs: {', '.join(wide_thumbs)})...")
     caps = {}
@@ -323,15 +326,17 @@ def build_plate(combo, wide_thumb="Thumb_1.25u"):
     min_skirt, max_skirt = min(skirts.values()), max(skirts.values())
     shortest_top = min(c.bounds[1][2] for c in caps.values())
     bar_z = (min_skirt, min_skirt + BAR_HEIGHT)
-    assert bar_z[1] > max_skirt + 1.0, "bar too short to weld into the tallest skirt"
-    assert bar_z[1] < shortest_top - 0.3, "bar would break through the shortest cap top"
+    if connected:
+        assert bar_z[1] > max_skirt + 1.0, "bar too short to weld into the tallest skirt"
+        assert bar_z[1] < shortest_top - 0.3, "bar would break through the shortest cap top"
 
     size = caps["Normal"].bounds[1] - caps["Normal"].bounds[0]
     cap_w, cap_d = size[0], size[1]
     pitch_x, pitch_y = cap_w + CAP_GAP, cap_d + CAP_GAP
 
-    print(f"[{combo}] placing caps and connector bars...")
-    parts = []
+    print(f"[{combo}] placing caps{' and connector bars' if connected else ' (loose)'}...")
+    parts = []           # manifolds (caps + bars) for the fused plate
+    bodies = []          # trimeshes (caps only) for the loose nylon file
     used = {name: 0 for name, _ in MIX}
     used.pop("Thumb_1.25u")
     for name in wide_thumbs:
@@ -340,10 +345,11 @@ def build_plate(combo, wide_thumb="Thumb_1.25u"):
         y = -r * pitch_y
         for c, name in enumerate(row):
             parts.append(to_manifold(caps[name]).translate([c * pitch_x, y, 0]))
+            bodies.append(caps[name].copy().apply_translation([c * pitch_x, y, 0]))
             used[name] += 1
-            if c > 0:
+            if connected and c > 0:
                 parts.append(bar(c * pitch_x - pitch_x / 2, y, bar_z, along_x=True))
-            if r > 0:
+            if connected and r > 0:
                 parts.append(bar(c * pitch_x, y + pitch_y / 2, bar_z, along_x=False))
 
     # Wide-thumb row: caps may differ in footprint, so align their top edges
@@ -356,14 +362,16 @@ def build_plate(combo, wide_thumb="Thumb_1.25u"):
         w, d = (caps[name].bounds[1] - caps[name].bounds[0])[:2]
         cx = cursor + w / 2
         parts.append(to_manifold(caps[name]).translate([cx, top_edge_y - d / 2, 0]))
+        bodies.append(caps[name].copy().apply_translation([cx, top_edge_y - d / 2, 0]))
         used[name] += 1
-        # weld upward into whichever thumb-row column sits above this cap
-        col_x = min(7, max(0, round(cx / pitch_x))) * pitch_x
-        col_x = min(max(col_x, cx - w / 2 + BAR_WIDTH), cx + w / 2 - BAR_WIDTH)
-        parts.append(bar(col_x, gap_y, bar_z, along_x=False))
-        if prev_edge is not None:
-            # weld sideways to the previous wide cap, near their aligned tops
-            parts.append(bar(prev_edge + CAP_GAP / 2, top_edge_y - 8.0, bar_z, along_x=True))
+        if connected:
+            # weld upward into whichever thumb-row column sits above this cap
+            col_x = min(7, max(0, round(cx / pitch_x))) * pitch_x
+            col_x = min(max(col_x, cx - w / 2 + BAR_WIDTH), cx + w / 2 - BAR_WIDTH)
+            parts.append(bar(col_x, gap_y, bar_z, along_x=False))
+            if prev_edge is not None:
+                # weld sideways to the previous wide cap, near their aligned tops
+                parts.append(bar(prev_edge + CAP_GAP / 2, top_edge_y - 8.0, bar_z, along_x=True))
         prev_edge = cursor + w
         cursor += w + CAP_GAP
 
@@ -374,16 +382,22 @@ def build_plate(combo, wide_thumb="Thumb_1.25u"):
     if used != expected:
         raise ValueError(f"layout does not match mix: {used} != {expected}")
 
-    print(f"[{combo}] fusing {len(parts)} parts...")
-    plate = m3d.Manifold.batch_boolean(parts, m3d.OpType.Add)
-    if plate.status() != m3d.Error.NoError:
-        raise ValueError(f"union failed: {plate.status()}")
-    if len(plate.decompose()) != 1:
-        raise ValueError("plate has disconnected bodies")
-
-    result = to_trimesh(plate)
-    if not result.is_watertight:
-        raise ValueError("plate is not watertight")
+    if connected:
+        print(f"[{combo}] fusing {len(parts)} parts...")
+        plate = m3d.Manifold.batch_boolean(parts, m3d.OpType.Add)
+        if plate.status() != m3d.Error.NoError:
+            raise ValueError(f"union failed: {plate.status()}")
+        if len(plate.decompose()) != 1:
+            raise ValueError("plate has disconnected bodies")
+        result = to_trimesh(plate)
+        if not result.is_watertight:
+            raise ValueError("plate is not watertight")
+    else:
+        # Nylon (MJF/SLS): loose, non-touching, watertight bodies in one STL.
+        print(f"[{combo}] placing {len(bodies)} loose caps...")
+        result = trimesh.util.concatenate(bodies)
+        if len(result.split(only_watertight=False)) != len(bodies):
+            raise ValueError("loose caps unexpectedly merged")
 
     path = plate_path(combo)
     kinds = set(wide_thumbs)
@@ -393,11 +407,15 @@ def build_plate(combo, wide_thumb="Thumb_1.25u"):
         path = path.replace("_Sofle_Mix.stl", "_Sofle_Mix_125U.stl")
     else:
         path = path.replace("_Sofle_Mix.stl", "_Sofle_Mix_15U.stl")
+    if not connected:
+        path = path.replace("_Sofle_Mix", "_Sofle_Mix_Nylon")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     result.export(path)
     size = result.bounds[1] - result.bounds[0]
     n_caps = 56 + len(wide_thumbs)
-    print(f"[{combo}] wrote {os.path.basename(path)}: {os.path.getsize(path) / 1e6:.1f} MB, "
+    kind = "fused plate" if connected else "loose bodies"
+    print(f"[{combo}] wrote {os.path.basename(path)} ({kind}): "
+          f"{os.path.getsize(path) / 1e6:.1f} MB, "
           f"{size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} mm, {n_caps} caps")
 
 
@@ -407,6 +425,8 @@ def main():
     parser.add_argument("--combo", choices=list(COMBOS), help="build a single combo")
     parser.add_argument("--thumb", default="both", choices=["1.25u", "1.5uV", "1.5uH", "both"],
                         help="wide thumb caps: both (default), 1.25u only, or upstream 1.5U only")
+    parser.add_argument("--only", choices=["sla", "nylon"],
+                        help="build only the SLA fused plate or only the nylon loose file")
     args = parser.parse_args()
     wide = {
         "1.25u": ("Thumb_1.25u",) * 2,
@@ -414,8 +434,10 @@ def main():
         "1.5uH": ("1.5U_Thumb_H",) * 2,
         "both": ("Thumb_1.25u", "Thumb_1.25u", "1.5U_Thumb_V", "1.5U_Thumb_V"),
     }[args.thumb]
+    kinds = {"sla": [True], "nylon": [False]}.get(args.only, [True, False])
     for combo in ([args.combo] if args.combo else COMBOS):
-        build_plate(combo, wide_thumb=wide)
+        for connected in kinds:
+            build_plate(combo, wide_thumb=wide, connected=connected)
 
 
 if __name__ == "__main__":
